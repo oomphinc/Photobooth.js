@@ -8,12 +8,12 @@ var defaults = {
 		shotDelay: 4000, //ms between shots
 		nofilter: true, //hashtag nofilter (allow true color as a filter option)
 		imageType: 'image/jpeg',
-		flashDur: 0, //duration of flash
+		flashDur: 200, //duration of flash
 		flashFade: 300, //duration of flash fadeout...0 disables the flash
 		print: false,
 		resolution: [320, 240], // [640, 480]
 		previewQuality: 1, //percentage quality (of main resolution) for the preview video
-		runningRate: 100, //ms to run the runner
+		tickRate: 100, //ms to run the runner
 		//events, e.g. on____
 		//
 	}
@@ -22,7 +22,12 @@ var defaults = {
 		this.name = 'PhotoBoothException';
 	}
 	, URL = window.URL || window.webkitURL
-	, guid = 0
+	, guid = (function(){
+		var counter = 0;
+		return function() {
+			return ++counter;
+		}
+	})()
 ;
 
 // add some styles for the flash
@@ -40,7 +45,7 @@ var PB = window.PhotoBooth = function(options) {
 		, settings = {} //user defined settings
 		, events = {} //event handlers
 		, filters = [] //photo filters for video
-		, selectedFilter = 0
+		, selectedFilter
 		, $container //overall container to apply status classes to
 		, intervalID // setInterval ID for when the sequence is running
 		, $preview = document.createElement('canvas')
@@ -55,8 +60,11 @@ var PB = window.PhotoBooth = function(options) {
 		, height
 		, previewWidth
 		, previewHeight
-		, timerVal
-		, snaps = []
+		, timerVal //if the session is paused, save the remaining countdown of current shot
+		, timerStart //timestamp at start of countdown
+		, shots //number of shots in a session, locked in while session is in progress
+		, shotDelay //delay between shots, locked in while session is in progress
+		, snaps = [] //holder for the snap image data, also acts as a running count of how many have been taken
 	;
 
 	// can we even get the video feed?
@@ -66,11 +74,15 @@ var PB = window.PhotoBooth = function(options) {
 
 	// repaint the preview canvas
 	var repaint = function() {
-		if ($video.paused || $video.ended) {
+		if ($video.paused || $video.ended || self.stream.ended) {
 			streamEnded();
 			return;
 		}
 		previewContext.drawImage($video, 0, 0, previewWidth, previewHeight);
+		// bail early for normal filter to avoid unnecessary processing
+		if (filters[selectedFilter].name==='normal') {
+			return;
+		}
 		var img = previewContext.getImageData(0, 0, previewWidth, previewHeight);
 		// loop on the pixels
 		for (var i = 0; i < img.data.length; i += 4) {
@@ -91,6 +103,7 @@ var PB = window.PhotoBooth = function(options) {
 			clearInterval(refreshID);
 			$container.classList.add('video-off');
 			$container.classList.remove('video-on');
+			self.stream.stop();
 			isStreaming = false;
 		}
 	}
@@ -101,6 +114,8 @@ var PB = window.PhotoBooth = function(options) {
 			function(stream) {
 				// make the stream reference publicly available
 				self.stream = stream;
+				// FF does not implement addEventListener for streams :(
+				if (stream.addEventListener) stream.addEventListener('ended',streamEnded);
 				$video.src = URL ? URL.createObjectURL(stream) : stream;
 				$video.addEventListener('canplay', function() {
 					if (!isStreaming) {
@@ -171,35 +186,98 @@ var PB = window.PhotoBooth = function(options) {
 		if (!Array.isArray(events[type])) return this;
 		if (arguments.length<3) {
 			args = context;
+			context = false;
 		}
 		context = context || this;
 		args = Array.isArray(args) ? args : [];
-		//add the PhotoBooth object as first arg always
-		args.unshift(this);
 		for(var i=0; i<events[type].length; i++) {
 			returnVal = events[type][i].apply(context,args)===false ? false : returnVal;
 		}
 		return returnVal;
 	}
 
-	this.start = function() {
-		$container.classList.add('started');
-		$container.classList.remove('paused','stopped');
-		if (!isSnapping) {
-			snaps = [];
+	// tick during a snap session
+	var tick = function() {
+		var remaining = Math.max(shotDelay - (Date.now() - timerStart),0);
+		self.trigger('tick',[remaining]);
+		//time for another snap!
+		if (remaining === 0) {
+			snap();
+			//shall we keep going?
+			if (snaps.length<shots) {
+				timerStart = Date.now();
+				self.trigger('countdownstart');
+			} else {
+				self.stop();
+			}
 		}
 	}
 
-	this.pause = function() {
-		$container.classList.add('paused');
-		clearInterval(intervalID);
+	// take a snapshot and save!
+	var snap = function() {
+		self.trigger('snap',[snaps.length+1]);
+		PB.flash(self.getOption('flashDur'), self.getOption('flashFade'), function(){
+			self.trigger('flashend');
+		});
+		// no-op the snap saving for now
+		snaps.push(1);
 	}
 
+	// start from stopped or paused
+	this.start = function() {
+		// we need the video stream!
+		if (!isStreaming) {
+			throw new PhotoBoothException('Video stream is not active!');
+		}
+		// we are already snapping!
+		if (isSnapping && timerVal===false) return this;
+		$container.classList.add('started');
+		$container.classList.remove('paused','stopped');
+		if (!isSnapping) {
+			isSnapping = true;
+			snaps = [];
+			//lock these in during a snap session
+			shots = this.getOption('shots');
+			shotDelay = this.getOption('shotDelay');
+			timerStart = Date.now();
+			timerVal = false;
+			this.trigger('start');
+		} else {
+			this.trigger('resume');
+			//set the start back in time since we are just resuming
+			timerStart = Date.now() - (shotDelay - timerVal);
+		}
+		intervalID = setInterval(tick,this.getOption('tickRate'));
+		return this;
+	}
+
+	// pause acts as toggle to start or resume
+	this.pause = function() {
+		if (isSnapping) {
+			// we better not be paused already!
+			if (timerVal===false) {
+				//lock in the remaining time
+				timerVal = Math.max(shotDelay - (Date.now() - timerStart),0);
+				$container.classList.add('paused');
+				this.trigger('pause');
+				clearInterval(intervalID);
+			} else {
+				// we are already paused! so just resume
+				this.start();
+			}
+		}
+		return this;
+	}
+
+	// stop the session, if running
 	this.stop = function() {
 		$container.classList.add('stopped');
 		$container.classList.remove('paused','started');
 		isSnapping = false;
+		timerVal = false;
 		clearInterval(intervalID);
+		this.trigger('stop');
+		return this;
 	}
 
 	this.kill = function() {
@@ -229,12 +307,15 @@ var PB = window.PhotoBooth = function(options) {
 	this.setFilter = function(which) {
 		// find filter by index number or name
 		if (which!==selectedFilter && (filters[which] || (typeof which==='string' && (which = getFilterIndexByName(which))>=0)) ) {
-			//remove previous filter classes
-			$container.classList.remove('filter-'+selectedFilter,'filter-'+filters[selectedFilter].name);
+			// do we even have a filter set yet?
+			if (typeof selectedFilter!=='undefined') {
+				//remove previous filter classes
+				$container.classList.remove('filter-'+selectedFilter,'filter-'+filters[selectedFilter].name);
+				this.trigger('filterchange',[filters[selectedFilter],filters[which]]);
+			}
 			selectedFilter = which;
 			//add new filter classes
 			$container.classList.add('filter-'+selectedFilter,'filter-'+filters[selectedFilter].name);
-			this.trigger('filterchange');
 		}
 		return this;
 	}
@@ -256,28 +337,42 @@ var PB = window.PhotoBooth = function(options) {
 		return this;
 	}
 
-	options = options || {};
-	//set up the initially passed options
-	this.setOption(options);
-	//pluck out event handlers from options
-	for (key in options) {
-		if (options.hasOwnProperty(key) && key.substr(0,2)==='on' && typeof options[key]==='function') {
-			this.on(key.substr(2).toLowerCase(),options[key]);
+	// constructor that runs only once body is ready
+	var init = function() {
+		options = options || {};
+		//set up the initially passed options
+		this.setOption(options);
+		//pluck out event handlers from options
+		for (key in options) {
+			if (options.hasOwnProperty(key) && key.substr(0,2)==='on' && typeof options[key]==='function') {
+				this.on(key.substr(2).toLowerCase(),options[key]);
+			}
 		}
-	}
-	// set the filters
-	options.filters = Array.isArray(options.filters) ? options.filters : Object.keys(PB.filters);
-	for (var i=0; i<options.filters.length; i++) {
-		//set a default filter
-		if (typeof options.filters[i]==='string' && Object.keys(PB.filters).indexOf(options.filters[i])>=0) {
-			this.addFilter(options.filters[i],PB.filters[options.filters[i]]);
+		// set the filters
+		options.filters = Array.isArray(options.filters) ? options.filters : Object.keys(PB.filters);
+		for (var i=0; i<options.filters.length; i++) {
+			//set a default filter
+			if (typeof options.filters[i]==='string' && Object.keys(PB.filters).indexOf(options.filters[i])>=0) {
+				this.addFilter(options.filters[i],PB.filters[options.filters[i]]);
+			}
 		}
+		// global container that receives different classes for various states
+		$container = options.container instanceof HTMLElement ? options.container : document.body;
+		// preview canvas element
+		(options.previewContainer instanceof HTMLElement ? options.previewContainer : $container).appendChild($preview);
+		// lock in the default filter
+		this.setFilter(0);
+		// set the state as stopped
+		$container.classList.add('stopped');
+		this.requestVideo();
 	}
-	// global container that receives different classes for various states
-	$container = options.container instanceof HTMLElement ? options.container : document.body;
-	// preview canvas element
-	(options.previewContainer instanceof HTMLElement ? options.previewContainer : $container).appendChild($preview);
-	this.requestVideo();
+
+	// check to see that the body exists!
+	if (document.body) {
+		init();
+	} else {
+		document.addEventListener('DOMContentLoaded', init.bind(this));
+	}
 
 }
 
