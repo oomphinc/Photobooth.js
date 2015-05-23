@@ -1,12 +1,15 @@
+/**
+ * TODO
+ * - use requestAnimationFrame or fallback to setInterval
+ */
 
 ;(function(window) {
 
 var defaults = {
-		orientation: 'portrait', // or landscape
+		orientation: 'landscape', // or portrait
 		refreshRate: 33, //ms to repaint canvas
 		shots: 4, // number of shots to take
 		shotDelay: 4000, //ms between shots
-		nofilter: true, //hashtag nofilter (allow true color as a filter option)
 		imageType: 'image/jpeg',
 		flashDur: 200, //duration of flash
 		flashFade: 300, //duration of flash fadeout...0 disables the flash
@@ -14,14 +17,18 @@ var defaults = {
 		resolution: [320, 240], // [640, 480]
 		previewQuality: 1, //percentage quality (of main resolution) for the preview video
 		tickRate: 100, //ms to run the runner
+		mirror: true, //mirror the video preview?
 		//events, e.g. on____
 		//
 	}
 	, PhotoBoothException = function(msg) {
 		this.message = msg;
 		this.name = 'PhotoBoothException';
+		this.toString = function() {
+			return this.name + ': ' + this.message;
+		}
 	}
-	, URL = window.URL || window.webkitURL
+	, URL = window.URL || window.webkitURL //smooth out vender prefix
 	, guid = (function(){
 		var counter = 0;
 		return function() {
@@ -45,17 +52,17 @@ var PB = window.PhotoBooth = function(options) {
 		, settings = {} //user defined settings
 		, events = {} //event handlers
 		, filters = [] //photo filters for video
-		, selectedFilter
+		, selectedFilter //index of selected filter
 		, $container //overall container to apply status classes to
 		, intervalID // setInterval ID for when the sequence is running
 		, $preview = document.createElement('canvas')
 		, previewContext = $preview.getContext('2d')
 		, $snap = document.createElement('canvas')
 		, snapContext = $snap.getContext('2d')
-		, refreshID
+		, refreshID // setInterval ID for repainting the canvas
 		, $video = document.createElement('video')
-		, isStreaming = false
-		, isSnapping = false
+		, isStreaming = false //whether video stream is active
+		, isSnapping = false //whether a session is underway
 		, width //lock in these values for consistency
 		, height
 		, previewWidth
@@ -72,6 +79,11 @@ var PB = window.PhotoBooth = function(options) {
 		throw new PhotoBoothException('getUserMedia is not supported in this browser.');
 	}
 
+	// if PhotoBooth wasn't invoked with new
+	if (this===window || !(this instanceof PB)) {
+		return new PB(options);
+	}
+
 	// repaint the preview canvas
 	var repaint = function() {
 		if ($video.paused || $video.ended || self.stream.ended) {
@@ -80,34 +92,74 @@ var PB = window.PhotoBooth = function(options) {
 		}
 		previewContext.drawImage($video, 0, 0, previewWidth, previewHeight);
 		// bail early for normal filter to avoid unnecessary processing
-		if (filters[selectedFilter].name==='normal') {
+		if (filters[selectedFilter].type==='none') {
 			return;
 		}
 		var img = previewContext.getImageData(0, 0, previewWidth, previewHeight);
-		// loop on the pixels
-		for (var i = 0; i < img.data.length; i += 4) {
-			//pass the pixel components (r,g,b,a) through the pixel filter
-			var newPixel = filters[selectedFilter].fn(img.data[i],img.data[i+1],img.data[i+2],img.data[i+3]);
-			img.data[i] = newPixel[0];
-			img.data[i+1] = newPixel[1];
-			img.data[i+2] = newPixel[2];
-			img.data[i+3] = newPixel[3];
-		}
-		previewContext.putImageData(img, 0, 0);
+		previewContext.putImageData(runFilter(img), 0, 0);
 	}
 
-	// clean up after the stream has stopped
+	// run image data object through the currently selected filter
+	var runFilter = function(img) {
+		switch (filters[selectedFilter].type) {
+			case 'pixel':
+				// faster than looking up in each loop iteration
+				var fn = filters[selectedFilter].fn;
+				// loop on the pixels
+				for (var i = 0; i < img.data.length; i += 4) {
+					//pass the pixel components (r,g,b,a) through the pixel filter
+					var newPixel = fn(img.data[i], img.data[i+1], img.data[i+2], img.data[i+3]);
+					img.data[i] = newPixel[0];
+					img.data[i+1] = newPixel[1];
+					img.data[i+2] = newPixel[2];
+					img.data[i+3] = newPixel[3];
+				}
+			break;
+
+			case 'full':
+				img = filters[selectedFilter].fn(img);
+			break;
+		}
+		return img;
+	}
+
+	// clean up after the stream has stopped (may be triggered by various means)
 	var streamEnded = function() {
 		if (isStreaming) {
 			self.trigger('videoended');
-			clearInterval(refreshID);
-			$container.classList.add('video-off');
-			$container.classList.remove('video-on');
 			self.stream.stop();
 			isStreaming = false;
 		}
 	}
 
+	// start previewing the video (i.e. painting the video feed onto the preview canvas)
+	this.previewStart = function() {
+		if (!isStreaming) {
+			throw new PhotoBoothException('Video stream is not active.');
+		// make sure preview is not already running
+		} else if (typeof refreshID==='undefined') {
+			$container.classList.add('video-on');
+			$container.classList.remove('video-off');
+			refreshID = setInterval(repaint, self.getOption('refreshRate'));
+			self.trigger('previewstart');
+		}
+		return self;
+	}
+
+	// stop previewing the video (only stops repainting the preview canvas-- video feed remains untouched)
+	this.previewStop = function() {
+		// is the preview even running?
+		if (typeof refreshID!=='undefined') {
+			clearInterval(refreshID);
+			refreshID = void(0); // set to undefined
+			$container.classList.add('video-off');
+			$container.classList.remove('video-on');
+			self.trigger('previewend');
+		}
+		return self;
+	}
+
+	// request the video feed from the user
 	this.requestVideo = function() {
 		navigator.getUserMedia({ video: true, audio: false },
 			// success! we have a stream
@@ -133,22 +185,20 @@ var PB = window.PhotoBooth = function(options) {
 						$preview.setAttribute('height', previewHeight);
 						$snap.setAttribute('width', width);
 						$snap.setAttribute('height', height);
-						// Reverse the canvas image
-						previewContext.translate(previewWidth, 0);
-						previewContext.scale(-1, 1);
-						snapContext.translate(width, 0);
-						snapContext.scale(-1, 1);
+						// Reverse the canvas image if mirror enabled
+						if (self.getOption('mirror')) {
+							previewContext.translate(previewWidth, 0);
+							previewContext.scale(-1, 1);
+						}
 						isStreaming = true;
+						$video.play();
 					}
 				});
 				$video.addEventListener('play', function() {
 					self.trigger('videostarted');
-					$container.classList.add('video-on');
-					$container.classList.remove('video-off');
-					refreshID = setInterval(repaint, self.getOption('refreshRate'));
+					self.previewStart();
 				});
 				$video.addEventListener('ended', streamEnded);
-				$video.play();
 			},
 			// error - we couldn't get the stream!
 			function(error) {
@@ -171,16 +221,24 @@ var PB = window.PhotoBooth = function(options) {
 		return this;
 	}
 
+	// get user set option or fallback to default
 	this.getOption = function(option) {
 		return typeof settings[option]==='undefined' ? defaults[option] : settings[option];
 	}
 
+	// using the container element, check if a status class is present
+	this.is = function(what) {
+		return $container.classList.contains(what);
+	}
+
+	// attach a handler to an event
 	this.on = function(type,handler) {
 		events[type] = events[type] || [];
 		events[type].push(handler);
 		return this;
 	}
 
+	// trigger an event -- context is optional, defaults to this PhotoBooth object
 	this.trigger = function(type,context,args) {
 		var returnVal = true;
 		if (!Array.isArray(events[type])) return this;
@@ -203,10 +261,12 @@ var PB = window.PhotoBooth = function(options) {
 		//time for another snap!
 		if (remaining === 0) {
 			snap();
+			$container.classList.remove('snap-'+snaps.length);
 			//shall we keep going?
 			if (snaps.length<shots) {
 				timerStart = Date.now();
 				self.trigger('countdownstart');
+				$container.classList.add('snap-'+(snaps.length+1));
 			} else {
 				self.stop();
 			}
@@ -223,6 +283,12 @@ var PB = window.PhotoBooth = function(options) {
 		snaps.push(1);
 	}
 
+	// capture current image from video feed
+	this.captureFrame = function() {
+		snapContext.drawImage($video, 0, 0, width, height);
+		return snapContext.getImageData(0, 0, width, height);
+	}
+
 	// start from stopped or paused
 	this.start = function() {
 		// we need the video stream!
@@ -235,18 +301,20 @@ var PB = window.PhotoBooth = function(options) {
 		$container.classList.remove('paused','stopped');
 		if (!isSnapping) {
 			isSnapping = true;
-			snaps = [];
+			snaps.length = 0;
 			//lock these in during a snap session
 			shots = this.getOption('shots');
 			shotDelay = this.getOption('shotDelay');
 			timerStart = Date.now();
-			timerVal = false;
 			this.trigger('start');
+			this.trigger('countdownstart');
+			$container.classList.add('snap-1');
 		} else {
 			this.trigger('resume');
-			//set the start back in time since we are just resuming
-			timerStart = Date.now() - (shotDelay - timerVal);
+			//set the start back in time since we are just resuming, but only if there was actually time remaining
+			timerStart = Date.now() - (timerVal===0 ? 0 : shotDelay - timerVal);
 		}
+		timerVal = false;
 		intervalID = setInterval(tick,this.getOption('tickRate'));
 		return this;
 	}
@@ -272,7 +340,7 @@ var PB = window.PhotoBooth = function(options) {
 	// stop the session, if running
 	this.stop = function() {
 		$container.classList.add('stopped');
-		$container.classList.remove('paused','started');
+		$container.classList.remove('paused','started','snap-'+snaps.length,'snap-'+(snaps.length+1));
 		isSnapping = false;
 		timerVal = false;
 		clearInterval(intervalID);
@@ -293,17 +361,37 @@ var PB = window.PhotoBooth = function(options) {
 		return -1;
 	}
 
-	this.addFilter = function(name,fn) {
-		//check for name validity and that it is not in use
-		if (/^[a-z][\w-]*$/i.test(name) && getFilterIndexByName(name)===-1 && typeof fn==='function') {
-			filters.push({
-				name: name,
-				fn: fn
-			});
+	this.addFilter = function(name,fn,type) {
+		//name is optional
+		if (typeof name==='function') {
+			type = fn;
+			fn = name;
+			name = null;
 		}
+		//force a unique, valid name
+		if (!name || !/^[a-z][\w-]*$/i.test(name) || getFilterIndexByName(name)>=0) {
+			do {
+				name = 'filter' + guid();
+			} while(getFilterIndexByName(name)>=0);
+		}
+		//if this is not the first filter added
+		if (filters.length) {
+			$container.classList.remove('filters-'+filters.length);
+		}
+		var filter = { name: name };
+		if (typeof fn==='function') {
+			//default type is pixel if not defined
+			filter.type = 'full' === type ? type : 'pixel';
+			filter.fn = fn;
+		} else {
+			filter.type = 'none';
+		}
+		filters.push(filter);
+		$container.classList.add('filters-'+filters.length);
 		return this;
 	}
 
+	// set the current filter by index num or filter name
 	this.setFilter = function(which) {
 		// find filter by index number or name
 		if (which!==selectedFilter && (filters[which] || (typeof which==='string' && (which = getFilterIndexByName(which))>=0)) ) {
@@ -328,10 +416,12 @@ var PB = window.PhotoBooth = function(options) {
 		return filters[selectedFilter].name;
 	}
 
+	// advance the selected filter
 	this.scrollFilter = function(howMany) {
+		// scroll forward 1 if not specified
 		howMany = typeof howMany==='undefined' ? 1 : (parseInt(howMany) || 0);
 		if (howMany<0) {
-			howMany = filters.length + howMany;
+			howMany = filters.length - (Math.abs(howMany) % filters.length);
 		}
 		this.setFilter((selectedFilter + howMany) % filters.length);
 		return this;
@@ -342,6 +432,10 @@ var PB = window.PhotoBooth = function(options) {
 		options = options || {};
 		//set up the initially passed options
 		this.setOption(options);
+		// global container that receives different classes for various states
+		$container = options.container instanceof HTMLElement ? options.container : document.body;
+		// add preview canvas element
+		(options.previewContainer instanceof HTMLElement ? options.previewContainer : $container).appendChild($preview);
 		//pluck out event handlers from options
 		for (key in options) {
 			if (options.hasOwnProperty(key) && key.substr(0,2)==='on' && typeof options[key]==='function') {
@@ -351,15 +445,17 @@ var PB = window.PhotoBooth = function(options) {
 		// set the filters
 		options.filters = Array.isArray(options.filters) ? options.filters : Object.keys(PB.filters);
 		for (var i=0; i<options.filters.length; i++) {
+			var filter = options.filters[i];
 			//set a default filter
-			if (typeof options.filters[i]==='string' && Object.keys(PB.filters).indexOf(options.filters[i])>=0) {
-				this.addFilter(options.filters[i],PB.filters[options.filters[i]]);
+			if (typeof filter==='string' && Object.keys(PB.filters).indexOf(filter)>=0) {
+				this.addFilter(filter,PB.filters[filter]);
+			} else if (typeof filter==='object') {
+				this.addFilter(filter.name,filter.fn,filter.type);
+			} else if (typeof filter==='function') {
+				// assumed default filter type and given a unique name
+				this.addFilter(filter);
 			}
 		}
-		// global container that receives different classes for various states
-		$container = options.container instanceof HTMLElement ? options.container : document.body;
-		// preview canvas element
-		(options.previewContainer instanceof HTMLElement ? options.previewContainer : $container).appendChild($preview);
 		// lock in the default filter
 		this.setFilter(0);
 		// set the state as stopped
@@ -407,11 +503,16 @@ PB.flash = function(flash,fade,fn) {
 	$flash.style.opacity = 0;
 }
 
+var $canvas = document.createElement('canvas')
+	, canvasContext = $canvas.getContext('2d')
+;
+PB.imgDataToURL = function(imgData,type,quality) {
+
+}
+
 // default filter functions
 PB.filters = {
-	normal: function() {
-		return arguments;
-	},
+	normal: null,
 	greyscale: function(r,g,b,a) {
 		var avg = 0.34 * r + 0.5 * g + 0.16 * b;
 		return [avg,avg,avg,a];
@@ -422,6 +523,9 @@ PB.filters = {
 	},
 	negative: function(r,g,b,a) {
 		return [255 - r, 255 - g, 255 - b, a];
+	},
+	colorswap: function(r,g,b,a) {
+		return [g, b, r, a];
 	},
 }
 
