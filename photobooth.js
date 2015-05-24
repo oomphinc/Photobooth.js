@@ -3,7 +3,7 @@
  * - use requestAnimationFrame or fallback to setInterval
  */
 
-;(function(window) {
+;(function(window,document) {
 
 var defaults = {
 		orientation: 'landscape', // or portrait
@@ -35,6 +35,7 @@ var defaults = {
 			return ++counter;
 		}
 	})()
+	, TO_RADIANS = Math.PI / 180
 ;
 
 // add some styles for the flash
@@ -67,6 +68,7 @@ var PB = window.PhotoBooth = function(options) {
 		, height
 		, previewWidth
 		, previewHeight
+		, portrait //whether we are in portrait mode, bc sometimes width / height would need to be swapped
 		, timerVal //if the session is paused, save the remaining countdown of current shot
 		, timerStart //timestamp at start of countdown
 		, shots //number of shots in a session, locked in while session is in progress
@@ -95,7 +97,8 @@ var PB = window.PhotoBooth = function(options) {
 		if (filters[selectedFilter].type==='none') {
 			return;
 		}
-		var img = previewContext.getImageData(0, 0, previewWidth, previewHeight);
+		// need to swap width and height when in portrait mode
+		var img = previewContext.getImageData(0, 0, portrait ? previewHeight : previewWidth, portrait ? previewWidth : previewHeight);
 		previewContext.putImageData(runFilter(img), 0, 0);
 	}
 
@@ -181,15 +184,52 @@ var PB = window.PhotoBooth = function(options) {
 						if ($video.videoWidth > 0) height = $video.videoHeight / ($video.videoWidth / width);
 						previewWidth = width * qual;
 						previewHeight = height * qual;
-						$preview.setAttribute('width', previewWidth);
-						$preview.setAttribute('height', previewHeight);
 						$snap.setAttribute('width', width);
 						$snap.setAttribute('height', height);
-						// Reverse the canvas image if mirror enabled
-						if (self.getOption('mirror')) {
-							previewContext.translate(previewWidth, 0);
-							previewContext.scale(-1, 1);
+						// set up the preview canvas based on orientation settings
+						switch (self.getOption('orientation')) {
+							// portrait with camera turned counter-clockwise
+							case 'portrait-cc':
+								portrait = true;
+								// width and height are swapped
+								$preview.setAttribute('width', previewHeight);
+								$preview.setAttribute('height', previewWidth);
+								previewContext.rotate(90*TO_RADIANS);
+								if (self.getOption('mirror')) {
+									previewContext.scale(1, -1);
+								} else {
+									previewContext.translate(0, -previewHeight);
+								}
+							break;
+
+							// portrait with camera turned clockwise
+							case 'portrait':
+								portrait = true;
+								// width and height are swapped
+								$preview.setAttribute('width', previewHeight);
+								$preview.setAttribute('height', previewWidth);
+								previewContext.rotate(-90*TO_RADIANS);
+								if (self.getOption('mirror')) {
+									previewContext.scale(1, -1);
+									previewContext.translate(-previewWidth,-previewHeight);
+								} else {
+									previewContext.translate(-previewWidth, 0);
+								}
+							break;
+
+							// default is landscape
+							default:
+								portrait = false;
+								$preview.setAttribute('width', previewWidth);
+								$preview.setAttribute('height', previewHeight);
+								if (self.getOption('mirror')) {
+									previewContext.translate(previewWidth, 0);
+									previewContext.scale(-1, 1);
+								}
 						}
+						// allow for direct transformations on the preview canvas context
+						self.trigger('previewcanvascontext',[previewContext, previewWidth, previewHeight])
+						// width and height are swapped in portrait mode
 						isStreaming = true;
 						$video.play();
 					}
@@ -233,22 +273,25 @@ var PB = window.PhotoBooth = function(options) {
 
 	// attach a handler to an event
 	this.on = function(type,handler) {
-		events[type] = events[type] || [];
-		events[type].push(handler);
+		if (typeof handler==='function') {
+			events[type] = events[type] || [];
+			events[type].push(handler);
+		}
 		return this;
 	}
 
 	// trigger an event -- context is optional, defaults to this PhotoBooth object
+	// returns false if *any* handler returned false, otherwise true
 	this.trigger = function(type,context,args) {
 		var returnVal = true;
-		if (!Array.isArray(events[type])) return this;
+		if (!Array.isArray(events[type])) return returnVal;
 		if (arguments.length<3) {
 			args = context;
 			context = false;
 		}
 		context = context || this;
 		args = Array.isArray(args) ? args : [];
-		for(var i=0; i<events[type].length; i++) {
+		for (var i=0; i<events[type].length; i++) {
 			returnVal = events[type][i].apply(context,args)===false ? false : returnVal;
 		}
 		return returnVal;
@@ -284,9 +327,16 @@ var PB = window.PhotoBooth = function(options) {
 	}
 
 	// capture current image from video feed
-	this.captureFrame = function() {
+	this.captureFrame = function(withFilter) {
+		if (!isStreaming) {
+			throw new PhotoBoothException('Video stream is not active.');
+		}
 		snapContext.drawImage($video, 0, 0, width, height);
-		return snapContext.getImageData(0, 0, width, height);
+		var img = snapContext.getImageData(0, 0, width, height);
+		if (withFilter) {
+			img = runFilter(img);
+		}
+		return img;
 	}
 
 	// start from stopped or paused
@@ -346,10 +396,6 @@ var PB = window.PhotoBooth = function(options) {
 		clearInterval(intervalID);
 		this.trigger('stop');
 		return this;
-	}
-
-	this.kill = function() {
-		clearInterval(refreshID);
 	}
 
 	var getFilterIndexByName = function(name) {
@@ -540,4 +586,4 @@ document.addEventListener('DOMContentLoaded', function(){
 	});
 });
 
-}(window));
+}(window,document));
