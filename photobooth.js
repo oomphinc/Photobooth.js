@@ -6,7 +6,7 @@
 ;(function(window,document) {
 
 var defaults = {
-		orientation: 'landscape', // or portrait
+		orientation: 'landscape', // or portrait or portrait-cc (i.e. counter-clockwise)
 		refreshRate: 33, //ms to repaint canvas
 		shots: 4, // number of shots to take
 		shotDelay: 4000, //ms between shots
@@ -15,18 +15,64 @@ var defaults = {
 		flashFade: 300, //duration of flash fadeout...0 disables the flash
 		print: false,
 		resolution: [320, 240], // [640, 480]
-		previewQuality: 1, //percentage quality (of main resolution) for the preview video
+		previewQuality: 1, //percentage quality (of main resolution) for the preview video (can be >1)
 		tickRate: 100, //ms to run the runner
 		mirror: true, //mirror the video preview?
 		//events, e.g. on____
-		//
+		// img is passed as an HTMLImage element, num starts from 1
+		processImage: function(img,num) {
+			//rotate the image in portrait mode
+			if (this.isPortrait()) {
+				console.log('portrait!');
+				//clear canvas and match to the width/height of the image after rotation
+				this.canvas.reset(this.getHeight(), this.getWidth());
+				//apply necessary transformations to get the desired rotation
+				switch (this.getOption('orientation')) {
+					case 'portrait-cc':
+						this.canvas.context.rotate(90*TO_RADIANS);
+						this.canvas.context.translate(0, -this.getHeight());
+					break;
+
+					case 'portrait':
+						this.canvas.context.rotate(-90*TO_RADIANS);
+						this.canvas.context.translate(-this.getWidth(), 0);
+					break;
+				}
+				//stick the image onto the canvas
+				this.canvas.context.drawImage(img,0,0);
+				//pull out the image after rotation and replace the source
+				img.src = this.canvas.el.toDataURL();
+			}
+			return img;
+		},
+		imageSize: function(num) {
+			return this.isPortrait() ? [ this.getHeight(), this.getWidth() ] : [ this.getWidth(), this.getHeight() ];
+		},
+		position: function(num) {
+			var across = Math.max(this.getOption('across')||0,1)
+				, size = this.getOption('imageSize').call(this)
+				, outer = this.getOption('outer')
+				, inner = this.getOption('inner')
+			;
+			return [outer + (num-(Math.ceil(num/across)-1)*across-1)*(inner+size[0]), outer + (Math.ceil(num/across)-1)*(inner+size[1])];
+		},
+		canvasSize: function() {
+			var across = Math.max(this.getOption('across')||0,1)
+				, down = Math.ceil(this.getOption('shots') / across)
+				, size = this.getOption('imageSize').call(this)
+				, outer = this.getOption('outer')
+				, inner = this.getOption('inner')
+			;
+			//calculate the width/height of the canvas based on number of shots, spacing, and placement
+			return [size[0]*across + outer*2 + (across-1)*inner, size[1]*down + outer*2 + (down-1)*inner];
+		},
+		outer: 0, //spacing between edge of render and edge of snap
+		inner: 0, //spacing between edge of snap and edge of snap
+		background: 'white', //fill color under snaps
+		across: 1, //number of snaps per line
 	}
 	, PhotoBoothException = function(msg) {
 		this.message = msg;
-		this.name = 'PhotoBoothException';
-		this.toString = function() {
-			return this.name + ': ' + this.message;
-		}
 	}
 	, URL = window.URL || window.webkitURL //smooth out vender prefix
 	, guid = (function(){
@@ -36,7 +82,21 @@ var defaults = {
 		}
 	})()
 	, TO_RADIANS = Math.PI / 180
+	//simple closure that converts a value into a function that returns that value
+	//two reserved words concatenated = suck it, JS!
+	, returnThis = function(what) {
+		return function() {
+			return what;
+		}
+	}
 ;
+
+PhotoBoothException.prototype = {
+	toString: function() {
+		return this.name + ': ' + this.message;
+	},
+	name: 'PhotoBoothException',
+}
 
 // add some styles for the flash
 var $style = document.createElement('style');
@@ -84,6 +144,17 @@ var PB = window.PhotoBooth = function(options) {
 	// if PhotoBooth wasn't invoked with new
 	if (this===window || !(this instanceof PB)) {
 		return new PB(options);
+	}
+
+	// generic canvas that can be used for image manipulations / rendering
+	this.canvas = {};
+	this.canvas.el = document.createElement('canvas');
+	this.canvas.context = this.canvas.el.getContext('2d');
+	// clear the canvas and optionally update the width/height
+	this.canvas.reset = function(width,height) {
+		// setting the width resets the canvas completely, even if set to the same width
+		self.canvas.el.width = width ? width : self.canvas.el.width;
+		if (height) self.canvas.el.height = height;
 	}
 
 	// repaint the preview canvas
@@ -176,12 +247,12 @@ var PB = window.PhotoBooth = function(options) {
 					if (!isStreaming) {
 						// lock in the width and height from options
 						var res = self.getOption('resolution');
-						// constrain within 0 to 1
-						var qual = Math.min(Math.max(self.getOption('previewQuality'),0),1) || 1;
 						width = res[0];
 						height = res[1];
-						// videoWidth isn't always set correctly in all browsers
+						// adjust height according to actual aspect ratio of video feed
 						if ($video.videoWidth > 0) height = $video.videoHeight / ($video.videoWidth / width);
+						// relative size of preview to snapshot resolution -- must be > 0 otherwise defaults to 1
+						var qual = Math.max(self.getOption('previewQuality'),0) || 1;
 						previewWidth = width * qual;
 						previewHeight = height * qual;
 						$snap.setAttribute('width', width);
@@ -266,6 +337,18 @@ var PB = window.PhotoBooth = function(options) {
 		return typeof settings[option]==='undefined' ? defaults[option] : settings[option];
 	}
 
+	this.getWidth = function() {
+		return width;
+	}
+
+	this.getHeight = function() {
+		return height;
+	}
+
+	this.isPortrait = function() {
+		return !!portrait;
+	}
+
 	// using the container element, check if a status class is present
 	this.is = function(what) {
 		return $container.classList.contains(what);
@@ -312,6 +395,7 @@ var PB = window.PhotoBooth = function(options) {
 				$container.classList.add('snap-'+(snaps.length+1));
 			} else {
 				self.stop();
+				render.call(self);
 			}
 		}
 	}
@@ -322,12 +406,12 @@ var PB = window.PhotoBooth = function(options) {
 		PB.flash(self.getOption('flashDur'), self.getOption('flashFade'), function(){
 			self.trigger('flashend');
 		});
-		// no-op the snap saving for now
-		snaps.push(1);
+		// push a new snap
+		snaps.push(self.captureFrame(true,'HTMLImageElement'));
 	}
 
 	// capture current image from video feed
-	this.captureFrame = function(withFilter) {
+	this.captureFrame = function(withFilter,type,typeOptions) {
 		if (!isStreaming) {
 			throw new PhotoBoothException('Video stream is not active.');
 		}
@@ -336,7 +420,40 @@ var PB = window.PhotoBooth = function(options) {
 		if (withFilter) {
 			img = runFilter(img);
 		}
+		if (type==='HTMLImageElement') {
+			typeOptions = typeOptions || [];
+			snapContext.putImageData(img,0,0);
+			img = new Image();
+			img.src = $snap.toDataURL();
+		}
 		return img;
+	}
+
+	var render = function() {
+		var processImage = this.getOption('processImage')
+			, imageSize = this.getOption('imageSize')
+			, positionFn = this.getOption('position')
+			, position
+		;
+		// process the images in place
+		for (var i=0; i<snaps.length; i++) {
+			snaps[i] = processImage.call(this,snaps[i],i+1);
+		}
+		// get the canvas size
+		var canvasSize = this.getOption('canvasSize').call(this);
+		// clear and resize the canvas
+		this.canvas.reset.apply(this, canvasSize);
+		// fill the canvas with the bg color
+		this.canvas.context.fillStyle = this.getOption('background');
+		this.canvas.context.fillRect(0, 0, canvasSize[0], canvasSize[1]);
+		// draw the snaps
+		for (var i=0; i<snaps.length; i++) {
+			position = positionFn.call(this,i+1);
+			this.canvas.context.drawImage(snaps[i],position[0],position[1]);
+		}
+		var img = new Image();
+		img.src = this.canvas.el.toDataURL();
+		document.body.appendChild(img);
 	}
 
 	// start from stopped or paused
@@ -476,6 +593,14 @@ var PB = window.PhotoBooth = function(options) {
 	// constructor that runs only once body is ready
 	var init = function() {
 		options = options || {};
+		// these options can be passed as an array or a function that returns an array
+		var arrayOrFn = ['imageSize', 'canvasSize'];
+		for (var i=0; i<arrayOrFn.length; i++) {
+			if (Array.isArray(options[ arrayOrFn[i] ])) {
+				//if it was an array, convert it to a function that returns a copy of that array
+				options[ arrayOrFn[i] ] = returnThis( options[ arrayOrFn[i] ].slice(0) );
+			}
+		}
 		//set up the initially passed options
 		this.setOption(options);
 		// global container that receives different classes for various states
