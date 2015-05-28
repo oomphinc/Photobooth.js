@@ -1,0 +1,187 @@
+<!DOCTYPE HTML>
+<html>
+	<head>
+		<title>Oomph-O-Matic</title>
+		<script src="http://code.jquery.com/jquery-2.1.4.min.js"></script>
+		<script src="photobooth.js"></script>
+		<script>
+			var waitingID; //for setTimeout
+			function resetBooth() {
+				$(document.body).removeClass('waiting');
+				//reset the filter
+				booth.setFilter(0);
+			}
+			var overlay = new Image();
+			overlay.src = 'overlay.png';
+			$(document).ready(function(){
+				var $countdown;
+				booth = new PhotoBooth({
+					previewContainer: $('#preview')[0],
+					shots: 6,
+					outer: 60,
+					inner: 40,
+					across: 2,
+					shotDelay: 750,
+					//shotDelay: 3000,
+					canvasSize: [1200, 1800],
+					resolution: [520, 1], //height is auto adjusted
+					imageType: 'image/jpeg',
+				})
+				.on('snap', function(){
+					//this.pause();
+					console.log('thats a snap, folks!');
+				})
+				.on('tick', function(remaining){
+					countdown.innerHTML = Math.ceil(remaining / 1000);
+				})
+				.on('complete', function() {
+					$(document.body).addClass('waiting');
+					// show waiting message for a short duration
+					setTimeout(resetBooth, 10000);
+				})
+				.on('afterRenderSnaps',function(context){
+					//add the overlay
+					context.drawImage(overlay,60,1315);
+				})
+				.on('save', function(imgData) {
+					var img = new Image();
+					img.src = imgData;
+					document.body.appendChild(img);
+				});
+
+				$(document.body).on('keyup', function(ev) {
+					// no actions can be taken in the waiting period, unless esc to cancel wait
+					if ($(this).hasClass('waiting')) {
+						if (ev.which===27) {
+							resetBooth();
+						} else {
+							return;
+						}
+					}
+					var preventDefault = true;
+					switch(ev.which) {
+						// left or up arrow to reverse filter
+						case 37:
+						case 38:
+							booth.scrollFilter(-1);
+						break;
+
+						// right or down arrow to advance filter
+						case 39:
+						case 40:
+							booth.scrollFilter();
+						break;
+
+						// spacebar to start or pause sequence
+						case 32:
+							if (booth.is('started')) {
+								booth.pause();
+							} else {
+								booth.start();
+							}
+						break;
+
+						// esc to stop the sequence
+						case 27:
+							booth.stop();
+						break;
+
+						default:
+							preventDefault = false;
+					}
+					if (preventDefault) ev.preventDefault();
+				});
+			});
+		</script>
+		<style>
+			@font-face {
+				font-family: Fifties;
+				src: url(RemachineScript.ttf);
+			}
+			@font-face {
+				font-family: CherryCreamSoda;
+				src: url(CherryCreamSoda.ttf);
+			}
+			body {
+				background-color: #81caa5;
+				color: #414142;
+				font-family: CherryCreamSoda;
+			}
+			h1, h2 {
+				font-family: Fifties;
+				text-shadow: 2px 2px #f6f2b5;
+				text-align: center;
+				line-height: 100%;
+				margin: 0;
+			}
+			h1 {
+				font-size: 30px;
+			}
+			h2 {
+				font-size: 75px;
+			}
+			canvas {
+				/*width: 640px;
+				height: 480px;*/
+				border: 1px solid black;
+				width: 100%;
+			}
+			.col-2 {
+				float: left;
+				width: 60%;
+				text-align: center;
+			}
+			#preview {
+				float: left;
+				width: 40%;
+			}
+			#countdown {
+				font-size: 100px;
+				text-align: center;
+			}
+			#instructions {
+				text-align: center;
+				display: none;
+				margin: 20px;
+			}
+			.photobooth.stopped:not(.waiting) #instructions {
+				display: block;
+			}
+			#instructions ol {
+				text-align: left;
+				margin-left: 140px;
+			}
+			.photobooth.stopped #countdown {
+				display: none;
+			}
+			#after_msg {
+				display: none;
+				margin: 20px;
+			}
+			.photobooth.waiting #after_msg {
+				display: block;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="preview"></div>
+		<div class="col-2">
+			<h1>Oomph-o-Matic</h1>
+			<h2>Photobooth</h2>
+			<div id="countdown"></div>
+			<div id="instructions">
+				Capture memories in dazzling technicolor!
+				<ol>
+					<li>Use the arrow keys to select a filter.</li>
+					<li>Strike a pose.</li>
+					<li>Hit space bar when you are ready to vogue!</li>
+				</ol>
+				<em>6 shots &mdash; 4s ea</em>
+			</div>
+			<div id="after_msg">
+				<p><big>You're done!</big></p>
+				Your pictures are traveling through space and time and will be ready to be picked up in the front conference room!
+			</div>
+		</div>
+	</body>
+</html>

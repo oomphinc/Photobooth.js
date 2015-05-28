@@ -29,12 +29,14 @@ var defaults = {
 		this.message = msg;
 	}
 	, URL = window.URL || window.webkitURL //smooth out vender prefix
+	// return a unique auto-incremented id for the current browser session
 	, guid = (function(){
 		var counter = 0;
 		return function() {
 			return ++counter;
 		}
 	})()
+	// constant to convert degrees to radians
 	, TO_RADIANS = Math.PI / 180
 	//simple closure that converts a value into a function that returns that value
 	//two reserved words concatenated = suck it, JS!
@@ -377,6 +379,7 @@ var PB = window.PhotoBooth = function(options) {
 				self.trigger('countdownstart');
 				$container.classList.add('snap-'+(snaps.length+1));
 			} else {
+				self.trigger('complete');
 				self.stop();
 				// delay by one tick
 				setTimeout(function() {
@@ -649,7 +652,7 @@ var PB = window.PhotoBooth = function(options) {
 		// lock in the default filter
 		this.setFilter(0);
 		// set the state as stopped
-		$container.classList.add('stopped');
+		$container.classList.add('stopped','photobooth');
 		this.requestVideo();
 	}
 
