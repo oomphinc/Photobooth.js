@@ -1,0 +1,19 @@
+{
+  "name": "photobooth-js-print-server",
+  "version": "0.0.1",
+  "description": "Photobooth.js print server",
+  "main": "index.coffee",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Ben Doherty @ Oomph, Inc",
+  "license": "ISC",
+  "dependencies": {
+    "coffee": "^1.1.0",
+    "fs": "0.0.2",
+    "image-type": "^2.0.2"
+  },
+  "devDependencies": {
+    "express": "^4.13.3"
+  }
+}
